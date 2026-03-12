@@ -1,7 +1,7 @@
 // src/app/api/auth/register/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase-server'
-import { createBrowserClient } from '@supabase/ssr'
+import { createBrowserClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'aj@respawnmedia.co'
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     {
       cookies: {
         getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
+        setAll: (cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) => {
           try { cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)) }
           catch (_) {}
         }
