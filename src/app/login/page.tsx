@@ -1,5 +1,10 @@
+'use client'
 // src/app/login/page.tsx
 // Serves the auth screen — on success redirects to /dashboard
+declare function switchTab(t: string): void
+declare function doLogin(): void
+declare function doRegister(): void
+
 export default function LoginPage() {
   return (
     <>
