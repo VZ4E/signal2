@@ -19,9 +19,13 @@ async function getUser(req) {
   const auth = req.headers.authorization
   if (!auth) return null
   const token = auth.replace('Bearer ', '')
-  const sb = createClient(SUPABASE_URL, SUPABASE_ANON)
-  const { data: { user } } = await sb.auth.getUser(token)
-  return user
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { 'apikey': SUPABASE_ANON, 'Authorization': `Bearer ${token}` }
+    })
+    if (!r.ok) return null
+    return await r.json()
+  } catch(_) { return null }
 }
 
 // ── AUTH ROUTES ──────────────────────────────────────────
@@ -29,27 +33,45 @@ app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body
   if (!name || !email || !password) return res.status(400).json({ error: 'All fields required.' })
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' })
-  // Use admin client to create user — faster and more reliable than signUp
-  const admin = adminClient()
-  const { data, error } = await admin.auth.admin.createUser({
-    email, password,
-    user_metadata: { name },
-    email_confirm: true
-  })
-  if (error || !data.user) return res.status(400).json({ error: error?.message || 'Registration failed.' })
-  if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-    await admin.from('profiles').update({ role: 'admin' }).eq('id', data.user.id)
+  try {
+    // Use Supabase Admin REST API directly — no SDK cold start
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_SERVICE,
+        'Authorization': `Bearer ${SUPABASE_SERVICE}`
+      },
+      body: JSON.stringify({ email, password, user_metadata: { name }, email_confirm: true })
+    })
+    const d = await r.json()
+    if (!r.ok) return res.status(400).json({ error: d.message || d.msg || 'Registration failed.' })
+    res.json({ ok: true, registered: true, user: { id: d.id, email: d.email } })
+  } catch(e) {
+    res.status(500).json({ error: e.message || 'Registration failed.' })
   }
-  res.json({ ok: true, registered: true, user: { id: data.user.id, email: data.user.email } })
 })
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email and password required.' })
-  const sb = createClient(SUPABASE_URL, SUPABASE_ANON)
-  const { data, error } = await sb.auth.signInWithPassword({ email, password })
-  if (error || !data.user) return res.status(401).json({ error: error?.message || 'Invalid credentials.' })
-  res.json({ ok: true, token: data.session.access_token, user: { id: data.user.id, email: data.user.email } })
+  try {
+    // Use Supabase Auth REST API directly — no SDK
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON,
+        'Authorization': `Bearer ${SUPABASE_ANON}`
+      },
+      body: JSON.stringify({ email, password })
+    })
+    const d = await r.json()
+    if (!r.ok) return res.status(401).json({ error: d.message || d.error_description || 'Invalid credentials.' })
+    res.json({ ok: true, token: d.access_token, user: { id: d.user.id, email: d.user.email } })
+  } catch(e) {
+    res.status(500).json({ error: e.message || 'Login failed.' })
+  }
 })
 
 // ── SCAN ROUTES ───────────────────────────────────────────
