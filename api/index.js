@@ -29,10 +29,17 @@ app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body
   if (!name || !email || !password) return res.status(400).json({ error: 'All fields required.' })
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' })
-  const sb = createClient(SUPABASE_URL, SUPABASE_ANON)
-  const { data, error } = await sb.auth.signUp({ email, password, options: { data: { name } } })
+  // Use admin client to create user — faster and more reliable than signUp
+  const admin = adminClient()
+  const { data, error } = await admin.auth.admin.createUser({
+    email, password,
+    user_metadata: { name },
+    email_confirm: true
+  })
   if (error || !data.user) return res.status(400).json({ error: error?.message || 'Registration failed.' })
-  // Return success immediately — user logs in separately
+  if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+    await admin.from('profiles').update({ role: 'admin' }).eq('id', data.user.id)
+  }
   res.json({ ok: true, registered: true, user: { id: data.user.id, email: data.user.email } })
 })
 
