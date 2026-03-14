@@ -32,11 +32,8 @@ app.post('/api/auth/register', async (req, res) => {
   const sb = createClient(SUPABASE_URL, SUPABASE_ANON)
   const { data, error } = await sb.auth.signUp({ email, password, options: { data: { name } } })
   if (error || !data.user) return res.status(400).json({ error: error?.message || 'Registration failed.' })
-  if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-    await adminClient().from('profiles').update({ role: 'admin' }).eq('id', data.user.id)
-  }
-  const { data: session } = await sb.auth.signInWithPassword({ email, password })
-  res.json({ ok: true, token: session?.session?.access_token, user: { id: data.user.id, email: data.user.email } })
+  // Return success immediately — user logs in separately
+  res.json({ ok: true, registered: true, user: { id: data.user.id, email: data.user.email } })
 })
 
 app.post('/api/auth/login', async (req, res) => {
