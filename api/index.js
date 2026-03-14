@@ -3,8 +3,8 @@ const { createClient } = require('@supabase/supabase-js')
 const app = express()
 app.use(express.json())
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+const SUPABASE_ANON = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY
 const TRANSCRIPT_TOKEN = process.env.TRANSCRIPT24_TOKEN
