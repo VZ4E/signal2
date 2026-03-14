@@ -34,7 +34,6 @@ app.post('/api/auth/register', async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'All fields required.' })
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' })
   try {
-    // Use Supabase Admin REST API directly — no SDK cold start
     const r = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
       method: 'POST',
       headers: {
@@ -46,7 +45,22 @@ app.post('/api/auth/register', async (req, res) => {
     })
     const d = await r.json()
     if (!r.ok) return res.status(400).json({ error: d.message || d.msg || 'Registration failed.' })
-    res.json({ ok: true, registered: true, user: { id: d.id, email: d.email } })
+
+    // FIX 1: After registration, immediately log in to get a token so the
+    // frontend can redirect straight to /dashboard without a second sign-in.
+    const loginR = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON,
+        'Authorization': `Bearer ${SUPABASE_ANON}`
+      },
+      body: JSON.stringify({ email, password })
+    })
+    const loginD = await loginR.json()
+    const token = loginD.access_token || null
+
+    res.json({ ok: true, registered: true, token, user: { id: d.id, email: d.email } })
   } catch(e) {
     res.status(500).json({ error: e.message || 'Registration failed.' })
   }
@@ -56,7 +70,6 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email and password required.' })
   try {
-    // Use Supabase Auth REST API directly — no SDK
     const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: {
@@ -82,7 +95,6 @@ app.post('/api/scan/run', async (req, res) => {
   if (!username) return res.status(400).json({ error: 'username required' })
   const cleanUsername = username.toLowerCase().trim().replace(/[^a-z0-9._]/g, '')
 
-  // 1. Fetch TikTok videos
   let videos = []
   try {
     const r = await fetch(`https://tiktok-scraper7.p.rapidapi.com/user/posts?unique_id=${encodeURIComponent(cleanUsername)}&count=${range}&cursor=0`, {
@@ -96,7 +108,6 @@ app.post('/api/scan/run', async (req, res) => {
     return res.status(502).json({ error: 'Failed to fetch TikTok videos.' })
   }
 
-  // 2. Transcribe
   let creditsUsed = 0
   const transcripts = await Promise.all(videos.map(async (v, i) => {
     const videoId = v.video_id || v.id || v.aweme_id || v.item_id
@@ -115,7 +126,6 @@ app.post('/api/scan/run', async (req, res) => {
     return { title, videoId, transcript, views: v.play_count || 0 }
   }))
 
-  // 3. Perplexity AI brand detection
   const combined = transcripts.map((v, i) => `[Video ${i+1}: "${v.title}"]\n${v.transcript}`).join('\n\n---\n\n')
   const prompt = `You are an expert at identifying brand deals in TikTok content. Analyze these transcripts and find ALL brand deals, sponsorships, or paid promotions.
 
@@ -143,7 +153,6 @@ ${combined.slice(0, 8000)}`
     deals = JSON.parse(raw.replace(/```json|```/g, '').trim())
   } catch (_) { deals = [] }
 
-  // 4. Save to DB
   await adminClient().from('scans').insert({ user_id: user.id, username: cleanUsername, range, video_count: videos.length, credits_used: creditsUsed, deals })
 
   res.json({ username: cleanUsername, videos, deals, creditsUsed })
@@ -371,7 +380,6 @@ textarea{resize:vertical;min-height:110px;font-family:var(--mono);font-size:13px
 ::-webkit-scrollbar{width:4px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:99px;}
-/* Login page */
 body.login-page{display:flex;align-items:center;justify-content:center;}
 body.login-page::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(90,160,232,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(90,160,232,0.025) 1px,transparent 1px);background-size:44px 44px;pointer-events:none;z-index:0;}
 .login-box{position:relative;z-index:1;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:40px 44px;width:420px;box-shadow:0 40px 80px rgba(0,0,0,0.6);}
@@ -458,9 +466,15 @@ async function doRegister() {
     const r=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password:pass})});
     const d=await r.json();
     if(!r.ok){showMsg(d.error||'Registration failed.','err');btn.disabled=false;btn.textContent='Create Account →';return;}
-    localStorage.setItem('rs_token',d.token); localStorage.setItem('rs_email',email);
-    showMsg('Account created! Redirecting...','ok');
-    setTimeout(()=>location.href='/dashboard',800);
+    if(d.token){
+      localStorage.setItem('rs_token',d.token); localStorage.setItem('rs_email',email);
+      showMsg('Account created! Redirecting...','ok');
+      setTimeout(()=>location.href='/dashboard',800);
+    } else {
+      showMsg('Account created! Please sign in.','ok');
+      setTimeout(()=>switchTab('login'),1200);
+      btn.disabled=false; btn.textContent='Create Account →';
+    }
   } catch(e){showMsg('Network error.','err');btn.disabled=false;btn.textContent='Create Account →';}
 }
 document.addEventListener('keydown',e=>{if(e.key==='Enter'){const lv=document.getElementById('form-login').style.display!=='none';if(lv)doLogin();else doRegister();}});
@@ -521,7 +535,7 @@ body{display:flex;}
           <button class="range-btn" onclick="setRange(14,this)">Last 14</button>
           <button class="range-btn" onclick="setRange(30,this)">Last 30</button>
         </div>
-        <p style="font-size:11px;color:var(--text3);margin-top:9px;font-family:var(--mono)">~1–2 transcript credits per video</p>
+        <p style="font-size:11px;color:var(--text3);margin-top:9px;font-family:var(--mono)">~1-2 transcript credits per video</p>
       </div>
       <button class="scan-btn" id="scan-btn" onclick="startScan()">⚡ Scan for Brand Deals</button>
       <div id="scan-results"></div>
@@ -607,7 +621,6 @@ async function init() {
   document.getElementById('su-av').textContent = EMAIL.slice(0,2).toUpperCase();
   await loadHistory();
   await loadCredits();
-  // Check if admin
   try {
     const r = await api('/api/admin/users');
     if (r.ok) { isAdmin = true; document.getElementById('admin-nav').style.display = 'block'; }
@@ -627,8 +640,16 @@ function navTo(id, el) {
   if(id==='admin') renderAdminPage();
 }
 
-function setRange(n,el) { scanRange=n; el.closest('.range-group').querySelectorAll('.range-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
-function setAutoRange(n,el) { autoRange=n; ['ar3','ar14','ar30'].forEach(i=>document.getElementById(i).classList.remove('active')); el.classList.add('active'); }
+function setRange(n,el) {
+  scanRange=n;
+  el.closest('.range-group').querySelectorAll('.range-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
+function setAutoRange(n,el) {
+  autoRange=n;
+  ['ar3','ar14','ar30'].forEach(i=>document.getElementById(i).classList.remove('active'));
+  el.classList.add('active');
+}
 
 function setStatus(msg) { document.getElementById('scan-results').innerHTML='<div class="status-bar"><div class="pulse"></div>'+msg+'</div>'; }
 function setError(msg) { document.getElementById('scan-results').innerHTML='<div class="err-bar">⚠ '+msg+'</div>'; }
@@ -654,11 +675,11 @@ function renderDeals(deals, videos, username) {
   const r = document.getElementById('scan-results');
   const listHtml = '<div class="card" style="margin-bottom:13px"><div class="card-label">Fetched — @'+username+'</div><div class="video-list">'+(videos||[]).map((v,i)=>'<div class="video-item"><span class="v-num">'+String(i+1).padStart(2,'0')+'</span><span class="v-title">'+(v.title||v.desc||'Untitled').slice(0,58)+'</span><span class="v-views">'+fmtNum(v.play_count||0)+'</span></div>').join('')+'</div></div>';
   if(!deals||!deals.length){r.innerHTML=listHtml+'<div class="no-results"><div class="ni">🔍</div><div>No brand deals detected</div></div>';return;}
-  const norm=deals.map(d=>({...d,brands:d.brands?.length?d.brands:(d.brand?[d.brand]:['Unknown'])}));
+  const norm=deals.map(d=>({...d,brands:d.brands&&d.brands.length?d.brands:(d.brand?[d.brand]:['Unknown'])}));
   const total=norm.reduce((a,d)=>a+d.brands.length,0);
   const html=norm.map((d,i)=>{
     const cc=d.confidence==='high'?'conf-high':d.confidence==='medium'?'conf-mid':'conf-low';
-    return '<div class="deal-card" style="animation-delay:'+i*0.05+'s"><div class="deal-top"><div style="flex:1"><div class="brand-tags">'+d.brands.map(b=>'<span class="brand-tag">🏷 '+b+'</span>').join('')+'</div></div><div class="conf-pill '+cc+'">'+d.confidence+'</div></div><div class="deal-type-lbl">'+(d.deal_type||'Sponsorship')+(d.video_ref?' · '+d.video_ref:'')+'</div>'+(d.evidence?'<div class="deal-evidence">"'+d.evidence+'"</div>':'')+'</div>';
+    return '<div class="deal-card" style="animation-delay:'+i*0.05+'s"><div class="deal-top"><div style="flex:1"><div class="brand-tags">'+d.brands.map(b=>'<span class="brand-tag">🏷 '+b+'</span>').join('')+'</div></div><div class="conf-pill '+cc+'">'+d.confidence+'</div></div><div class="deal-type-lbl">'+(d.deal_type||'Sponsorship')+(d.video_ref?' · '+d.video_ref:'')+'</div>'+(d.evidence?'<div class="deal-evidence">'+d.evidence+'</div>':'')+'</div>';
   }).join('');
   r.innerHTML=listHtml+'<div class="results-hdr"><div class="results-title">Deals Found</div><div class="count-pill">'+norm.length+' post'+(norm.length!==1?'s':'')+' · '+total+' brand'+(total!==1?'s':'')+'</div></div>'+html;
 }
@@ -674,7 +695,10 @@ async function clearHistory() {
   scanHistory=[]; renderHistory(); updateBadges();
 }
 
-function toggleExpand(id){const el=document.getElementById('he-'+id);if(el)el.classList.toggle('open');}
+function toggleExpand(id) {
+  const el=document.getElementById('he-'+id);
+  if(el) el.classList.toggle('open');
+}
 
 function renderHistory() {
   const c=document.getElementById('history-list');
@@ -688,9 +712,11 @@ function renderHistory() {
     const dealsHtml=!deals.length?'<div style="font-size:12px;color:var(--text3);padding:7px 0">No deals found</div>':deals.map(d=>{
       const bs=(d.brands||(d.brand?[d.brand]:['?'])).join(', ');
       const cc=d.confidence==='high'?'conf-high':d.confidence==='medium'?'conf-mid':'conf-low';
-      return '<div class="he-row"><div style="flex:1"><div class="he-brand">🏷 '+bs+'</div><div class="he-type">'+(d.deal_type||'')+(d.video_ref?' · '+d.video_ref:'')+'</div>'+(d.evidence?'<div class="he-evidence">"'+d.evidence.slice(0,85)+(d.evidence.length>85?'...':'')+'"</div>':'')+'</div><div class="conf-pill '+cc+'" style="margin-top:0">'+d.confidence+'</div></div>';
+      return '<div class="he-row"><div style="flex:1"><div class="he-brand">🏷 '+bs+'</div><div class="he-type">'+(d.deal_type||'')+(d.video_ref?' · '+d.video_ref:'')+'</div>'+(d.evidence?'<div class="he-evidence">'+d.evidence.slice(0,85)+(d.evidence.length>85?'...':'')+'</div>':'')+'</div><div class="conf-pill '+cc+'" style="margin-top:0">'+d.confidence+'</div></div>';
     }).join('');
-    return '<div class="history-item" onclick="toggleExpand(\''+e.id+'\')"><div><div class="hi-name">@'+e.username+'</div><div class="hi-meta"><span>📅 '+ds+'</span>'+(e.range?'<span>Last '+e.range+'</span>':'')+(e.video_count?'<span>'+e.video_count+' videos</span>':'')+(e.credits_used?'<span>🪙 '+e.credits_used+'</span>':'')+'</div></div><div class="hi-right"><div class="hi-deals">'+deals.length+' deal'+(deals.length!==1?'s':'')+'</div>'+(preview?'<div class="hi-brands">'+preview+'</div>':'')+'</div></div><div class="history-expand" id="he-'+e.id+'">'+dealsHtml+'</div>';
+    // FIX 2+3: data-id on the element, read via this.dataset.id in onclick.
+    // Eliminates the escaped-quote string concatenation that broke JS parsing.
+    return '<div class="history-item" data-id="'+e.id+'" onclick="toggleExpand(this.dataset.id)"><div><div class="hi-name">@'+e.username+'</div><div class="hi-meta"><span>📅 '+ds+'</span>'+(e.range?'<span>Last '+e.range+'</span>':'')+(e.video_count?'<span>'+e.video_count+' videos</span>':'')+(e.credits_used?'<span>🪙 '+e.credits_used+'</span>':'')+'</div></div><div class="hi-right"><div class="hi-deals">'+deals.length+' deal'+(deals.length!==1?'s':'')+'</div>'+(preview?'<div class="hi-brands">'+preview+'</div>':'')+'</div></div><div class="history-expand" id="he-'+e.id+'">'+dealsHtml+'</div>';
   }).join('');
 }
 
@@ -750,7 +776,8 @@ async function renderAdminPage() {
       const joined=new Date(u.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
       const isMe=u.email===EMAIL;
       const roleBadge=u.role==='admin'?'<span class="role-badge role-admin">ADMIN</span>':'<span class="role-badge role-user">USER</span>';
-      const actions=isMe?'<span style="font-size:10px;color:var(--text3)">YOU</span>':'<button class="tbl-action tbl-promote" onclick="promoteUser(\''+u.id+'\',\''+u.role+'\')">↑ Promote</button> <button class="tbl-action" onclick="deleteUser(\''+u.id+'\')">✕ Remove</button>';
+      // Also fixed: admin table action buttons use data attributes instead of inline string escaping
+      const actions=isMe?'<span style="font-size:10px;color:var(--text3)">YOU</span>':'<button class="tbl-action tbl-promote" data-id="'+u.id+'" data-role="'+u.role+'" onclick="promoteUser(this.dataset.id,this.dataset.role)">↑ Promote</button> <button class="tbl-action" data-id="'+u.id+'" onclick="deleteUser(this.dataset.id)">✕ Remove</button>';
       return '<tr><td>'+u.name+'</td><td style="font-family:var(--mono);font-size:12px;color:var(--text2)">'+u.email+'</td><td>'+roleBadge+'</td><td style="font-family:var(--mono);font-size:12px">'+u.stats.scans+'</td><td style="font-family:var(--mono);font-size:12px;color:var(--amber)">'+u.stats.credits+'</td><td style="font-family:var(--mono);font-size:11px;color:var(--text3)">'+joined+'</td><td>'+actions+'</td></tr>';
     }).join('');
   } catch(e){console.error(e);}
@@ -769,12 +796,12 @@ async function deleteUser(id) {
 }
 
 function updateImportCount() {
-  const n=document.getElementById('import-textarea').value.split('\\n').map(l=>l.trim().replace(/^@/,'')).filter(Boolean).length;
-  document.getElementById('import-count').textContent=n||'';
+  const lines=document.getElementById('import-textarea').value.split('\n').map(l=>l.trim().replace(/^@/,'')).filter(Boolean);
+  document.getElementById('import-count').textContent=lines.length||'';
 }
 
 async function runImportList() {
-  const usernames=document.getElementById('import-textarea').value.split('\\n').map(l=>l.trim().replace(/^@/,'')).filter(Boolean);
+  const usernames=document.getElementById('import-textarea').value.split('\n').map(l=>l.trim().replace(/^@/,'')).filter(Boolean);
   if(!usernames.length)return;
   const btn=document.getElementById('import-run-btn'); btn.disabled=true;
   document.getElementById('import-queue').style.display='block';
